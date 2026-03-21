@@ -1,0 +1,541 @@
+cluster:
+  inlineManifests:
+    - name: scaleway-csi-rbac
+      contents: |
+        apiVersion: v1
+        kind: ServiceAccount
+        metadata:
+          name: scaleway-csi
+          namespace: kube-system
+        ---
+        kind: ClusterRole
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-attacher
+        rules:
+          - apiGroups: [""]
+            resources: ["persistentvolumes"]
+            verbs: ["get", "list", "watch", "patch"]
+          - apiGroups: ["storage.k8s.io"]
+            resources: ["csinodes"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: ["storage.k8s.io"]
+            resources: ["volumeattachments"]
+            verbs: ["get", "list", "watch", "patch"]
+          - apiGroups: ["storage.k8s.io"]
+            resources: ["volumeattachments/status"]
+            verbs: ["patch"]
+          - apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["get", "list"]
+        ---
+        kind: ClusterRole
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-provisioner
+        rules:
+          - apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["get", "list"]
+          - apiGroups: [""]
+            resources: ["persistentvolumes"]
+            verbs: ["get", "list", "watch", "create", "patch", "delete"]
+          - apiGroups: [""]
+            resources: ["persistentvolumeclaims"]
+            verbs: ["get", "list", "watch", "update"]
+          - apiGroups: ["storage.k8s.io"]
+            resources: ["storageclasses"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: [""]
+            resources: ["events"]
+            verbs: ["list", "watch", "create", "update", "patch"]
+          - apiGroups: ["snapshot.storage.k8s.io"]
+            resources: ["volumesnapshots"]
+            verbs: ["get", "list"]
+          - apiGroups: ["snapshot.storage.k8s.io"]
+            resources: ["volumesnapshotcontents"]
+            verbs: ["get", "list"]
+          - apiGroups: ["storage.k8s.io"]
+            resources: ["csinodes"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: [""]
+            resources: ["nodes"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: ["storage.k8s.io"]
+            resources: ["volumeattachments"]
+            verbs: ["get", "list", "watch"]
+        ---
+        kind: ClusterRole
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-resizer
+        rules:
+          - apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: [""]
+            resources: ["persistentvolumes"]
+            verbs: ["get", "list", "watch", "patch"]
+          - apiGroups: [""]
+            resources: ["persistentvolumeclaims"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: [""]
+            resources: ["pods"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: [""]
+            resources: ["persistentvolumeclaims/status"]
+            verbs: ["patch"]
+          - apiGroups: [""]
+            resources: ["events"]
+            verbs: ["list", "watch", "create", "update", "patch"]
+          - apiGroups: ["storage.k8s.io"]
+            resources: ["volumeattributesclasses"]
+            verbs: ["get", "list", "watch"]
+        ---
+        kind: ClusterRole
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-snapshotter
+        rules:
+          - apiGroups: [""]
+            resources: ["events"]
+            verbs: ["list", "watch", "create", "update", "patch"]
+          - apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["get", "list"]
+          - apiGroups: ["snapshot.storage.k8s.io"]
+            resources: ["volumesnapshotclasses"]
+            verbs: ["get", "list", "watch"]
+          - apiGroups: ["snapshot.storage.k8s.io"]
+            resources: ["volumesnapshotcontents"]
+            verbs: ["get", "list", "watch", "update", "patch"]
+          - apiGroups: ["snapshot.storage.k8s.io"]
+            resources: ["volumesnapshotcontents/status"]
+            verbs: ["update", "patch"]
+        ---
+        kind: ClusterRoleBinding
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-attacher
+        subjects:
+          - kind: ServiceAccount
+            name: scaleway-csi
+            namespace: kube-system
+        roleRef:
+          kind: ClusterRole
+          name: scaleway-csi-attacher
+          apiGroup: rbac.authorization.k8s.io
+        ---
+        kind: ClusterRoleBinding
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-provisioner
+        subjects:
+          - kind: ServiceAccount
+            name: scaleway-csi
+            namespace: kube-system
+        roleRef:
+          kind: ClusterRole
+          name: scaleway-csi-provisioner
+          apiGroup: rbac.authorization.k8s.io
+        ---
+        kind: ClusterRoleBinding
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-resizer
+        subjects:
+          - kind: ServiceAccount
+            name: scaleway-csi
+            namespace: kube-system
+        roleRef:
+          kind: ClusterRole
+          name: scaleway-csi-resizer
+          apiGroup: rbac.authorization.k8s.io
+        ---
+        kind: ClusterRoleBinding
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-snapshotter
+        subjects:
+          - kind: ServiceAccount
+            name: scaleway-csi
+            namespace: kube-system
+        roleRef:
+          kind: ClusterRole
+          name: scaleway-csi-snapshotter
+          apiGroup: rbac.authorization.k8s.io
+        ---
+        kind: Role
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-attacher
+          namespace: kube-system
+        rules:
+        - apiGroups: ["coordination.k8s.io"]
+          resources: ["leases"]
+          verbs: ["get", "watch", "list", "delete", "update", "create"]
+        ---
+        kind: Role
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-provisioner
+          namespace: kube-system
+        rules:
+        - apiGroups: ["coordination.k8s.io"]
+          resources: ["leases"]
+          verbs: ["get", "watch", "list", "delete", "update", "create"]
+        - apiGroups: ["storage.k8s.io"]
+          resources: ["csistoragecapacities"]
+          verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+        - apiGroups: [""]
+          resources: ["pods"]
+          verbs: ["get"]
+        - apiGroups: ["apps"]
+          resources: ["replicasets"]
+          verbs: ["get"]
+        ---
+        kind: Role
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-resizer
+          namespace: kube-system
+        rules:
+        - apiGroups: ["coordination.k8s.io"]
+          resources: ["leases"]
+          verbs: ["get", "watch", "list", "delete", "update", "create"]
+        ---
+        kind: Role
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-snapshotter
+          namespace: kube-system
+        rules:
+        - apiGroups: ["coordination.k8s.io"]
+          resources: ["leases"]
+          verbs: ["get", "watch", "list", "delete", "update", "create"]
+        ---
+        kind: RoleBinding
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-attacher
+          namespace: kube-system
+        subjects:
+          - kind: ServiceAccount
+            name: scaleway-csi
+            namespace: kube-system
+        roleRef:
+          kind: Role
+          name: scaleway-csi-attacher
+          apiGroup: rbac.authorization.k8s.io
+        ---
+        kind: RoleBinding
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-provisioner
+          namespace: kube-system
+        subjects:
+          - kind: ServiceAccount
+            name: scaleway-csi
+            namespace: kube-system
+        roleRef:
+          kind: Role
+          name: scaleway-csi-provisioner
+          apiGroup: rbac.authorization.k8s.io
+        ---
+        kind: RoleBinding
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-resizer
+          namespace: kube-system
+        subjects:
+          - kind: ServiceAccount
+            name: scaleway-csi
+            namespace: kube-system
+        roleRef:
+          kind: Role
+          name: scaleway-csi-resizer
+          apiGroup: rbac.authorization.k8s.io
+        ---
+        kind: RoleBinding
+        apiVersion: rbac.authorization.k8s.io/v1
+        metadata:
+          name: scaleway-csi-snapshotter
+          namespace: kube-system
+        subjects:
+          - kind: ServiceAccount
+            name: scaleway-csi
+            namespace: kube-system
+        roleRef:
+          kind: Role
+          name: scaleway-csi-snapshotter
+          apiGroup: rbac.authorization.k8s.io
+
+    - name: scaleway-csi-secret
+      contents: |
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: scaleway-csi-secret
+          namespace: kube-system
+        type: Opaque
+        stringData:
+          SCW_ACCESS_KEY: "YOUR_ACCESS_KEY"
+          SCW_SECRET_KEY: "YOUR_SECRET_KEY"
+          SCW_DEFAULT_PROJECT_ID: "YOUR_PROJECT_ID"
+          SCW_DEFAULT_ZONE: "fr-par-1"
+
+    - name: scaleway-csi-storage
+      contents: |
+        apiVersion: storage.k8s.io/v1
+        kind: StorageClass
+        metadata:
+          name: scw-bssd
+          annotations:
+            storageclass.kubernetes.io/is-default-class: "true"
+        provisioner: csi.scaleway.com
+        reclaimPolicy: Delete
+        volumeBindingMode: WaitForFirstConsumer
+        allowVolumeExpansion: true
+        ---
+        apiVersion: storage.k8s.io/v1
+        kind: StorageClass
+        metadata:
+          name: scw-bssd-retain
+        provisioner: csi.scaleway.com
+        reclaimPolicy: Retain
+        volumeBindingMode: WaitForFirstConsumer
+        allowVolumeExpansion: true
+        ---
+        apiVersion: storage.k8s.io/v1
+        kind: CSIDriver
+        metadata:
+          name: csi.scaleway.com
+        spec:
+          attachRequired: true
+          podInfoOnMount: true
+
+    - name: scaleway-csi-node
+      contents: |
+        kind: DaemonSet
+        apiVersion: apps/v1
+        metadata:
+          name: scaleway-csi-node
+          namespace: kube-system
+        spec:
+          selector:
+            matchLabels:
+              app: scaleway-csi-node
+          template:
+            metadata:
+              labels:
+                app: scaleway-csi-node
+            spec:
+              serviceAccount: scaleway-csi
+              nodeSelector:
+                kubernetes.io/os: linux
+              priorityClassName: system-node-critical
+              containers:
+                - name: scaleway-csi-plugin
+                  image: scaleway/scaleway-csi:v0.3.4
+                  imagePullPolicy: IfNotPresent
+                  args:
+                    - "--endpoint=$(CSI_ENDPOINT)"
+                    - "--v=4"
+                    - "--mode=node"
+                  env:
+                    - name: CSI_ENDPOINT
+                      value: unix:///csi/csi.sock
+                  securityContext:
+                    privileged: true
+                  ports:
+                    - name: healthz
+                      containerPort: 9808
+                      protocol: TCP
+                  livenessProbe:
+                    httpGet:
+                      path: /healthz
+                      port: healthz
+                    initialDelaySeconds: 10
+                    timeoutSeconds: 3
+                    periodSeconds: 2
+                    failureThreshold: 5
+                  volumeMounts:
+                    - name: plugin-dir
+                      mountPath: /csi
+                    - name: kubelet-dir
+                      mountPath: /var/lib/kubelet
+                      mountPropagation: "Bidirectional"
+                    - name: device-dir
+                      mountPath: /dev
+                - name: csi-node-driver-registrar
+                  image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.14.0
+                  imagePullPolicy: IfNotPresent
+                  args:
+                    - "--v=2"
+                    - "--csi-address=$(CSI_ADDRESS)"
+                    - "--kubelet-registration-path=$(KUBELET_REGISTRATION_PATH)"
+                  env:
+                    - name: CSI_ADDRESS
+                      value: /csi/csi.sock
+                    - name: KUBELET_REGISTRATION_PATH
+                      value: /var/lib/kubelet/plugins/csi.scaleway.com/csi.sock
+                    - name: KUBE_NODE_NAME
+                      valueFrom:
+                        fieldRef:
+                          fieldPath: spec.nodeName
+                  volumeMounts:
+                    - name: plugin-dir
+                      mountPath: /csi/
+                    - name: registration-dir
+                      mountPath: /registration/
+                - name: liveness-probe
+                  image: registry.k8s.io/sig-storage/livenessprobe:v2.16.0
+                  imagePullPolicy: IfNotPresent
+                  args:
+                    - "--csi-address=$(CSI_ADDRESS)"
+                  env:
+                    - name: CSI_ADDRESS
+                      value: /csi/csi.sock
+                  volumeMounts:
+                    - name: plugin-dir
+                      mountPath: /csi
+              volumes:
+                - name: registration-dir
+                  hostPath:
+                    path: /var/lib/kubelet/plugins_registry/
+                    type: DirectoryOrCreate
+                - name: plugin-dir
+                  hostPath:
+                    path: /var/lib/kubelet/plugins/csi.scaleway.com
+                    type: DirectoryOrCreate
+                - name: kubelet-dir
+                  hostPath:
+                    path: /var/lib/kubelet
+                    type: Directory
+                - name: device-dir
+                  hostPath:
+                    path: /dev
+
+    - name: scaleway-csi-controller
+      contents: |
+        kind: Deployment
+        apiVersion: apps/v1
+        metadata:
+          name: scaleway-csi-controller
+          namespace: kube-system
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: scaleway-csi-controller
+          template:
+            metadata:
+              labels:
+                app: scaleway-csi-controller
+            spec:
+              priorityClassName: system-cluster-critical
+              serviceAccount: scaleway-csi
+              containers:
+                - name: scaleway-csi-plugin
+                  image: scaleway/scaleway-csi:v0.3.4
+                  imagePullPolicy: IfNotPresent
+                  args:
+                    - "--endpoint=$(CSI_ENDPOINT)"
+                    - "--mode=controller"
+                    - "--v=4"
+                  env:
+                    - name: CSI_ENDPOINT
+                      value: unix:///var/lib/csi/sockets/pluginproxy/csi.sock
+                  envFrom:
+                    - secretRef:
+                        name: scaleway-csi-secret
+                  ports:
+                    - name: healthz
+                      containerPort: 9808
+                      protocol: TCP
+                  livenessProbe:
+                    httpGet:
+                      path: /healthz
+                      port: healthz
+                    initialDelaySeconds: 10
+                    timeoutSeconds: 3
+                    periodSeconds: 2
+                    failureThreshold: 5
+                  volumeMounts:
+                    - name: socket-dir
+                      mountPath: /var/lib/csi/sockets/pluginproxy/
+                - name: csi-provisioner
+                  image: registry.k8s.io/sig-storage/csi-provisioner:v5.3.0
+                  imagePullPolicy: IfNotPresent
+                  args:
+                    - "--v=5"
+                    - "--csi-address=$(CSI_ADDRESS)"
+                    - "--leader-election"
+                    - "--feature-gates=Topology=true"
+                    - "--default-fstype=ext4"
+                  env:
+                    - name: CSI_ADDRESS
+                      value: /var/lib/csi/sockets/pluginproxy/csi.sock
+                  volumeMounts:
+                    - name: socket-dir
+                      mountPath: /var/lib/csi/sockets/pluginproxy/
+                - name: csi-attacher
+                  image: registry.k8s.io/sig-storage/csi-attacher:v4.9.0
+                  imagePullPolicy: IfNotPresent
+                  args:
+                    - "--v=5"
+                    - "--csi-address=$(CSI_ADDRESS)"
+                    - "--leader-election"
+                    - "--reconcile-sync=10m"
+                  env:
+                    - name: CSI_ADDRESS
+                      value: /var/lib/csi/sockets/pluginproxy/csi.sock
+                  volumeMounts:
+                    - name: socket-dir
+                      mountPath: /var/lib/csi/sockets/pluginproxy/
+                - name: csi-snapshotter
+                  image: registry.k8s.io/sig-storage/csi-snapshotter:v8.3.0
+                  imagePullPolicy: IfNotPresent
+                  args:
+                    - "--v=5"
+                    - "--csi-address=$(CSI_ADDRESS)"
+                    - "--leader-election"
+                  env:
+                    - name: CSI_ADDRESS
+                      value: /var/lib/csi/sockets/pluginproxy/csi.sock
+                  volumeMounts:
+                    - name: socket-dir
+                      mountPath: /var/lib/csi/sockets/pluginproxy/
+                - name: snapshot-controller
+                  image: registry.k8s.io/sig-storage/snapshot-controller:v8.3.0
+                  imagePullPolicy: IfNotPresent
+                  args:
+                    - "--v=5"
+                    - "--leader-election"
+                - name: csi-resizer
+                  image: registry.k8s.io/sig-storage/csi-resizer:v1.14.0
+                  imagePullPolicy: IfNotPresent
+                  args:
+                    - "--v=5"
+                    - "--csi-address=$(CSI_ADDRESS)"
+                    - "--leader-election"
+                  env:
+                    - name: CSI_ADDRESS
+                      value: /var/lib/csi/sockets/pluginproxy/csi.sock
+                  volumeMounts:
+                    - name: socket-dir
+                      mountPath: /var/lib/csi/sockets/pluginproxy/
+                - name: liveness-probe
+                  image: registry.k8s.io/sig-storage/livenessprobe:v2.16.0
+                  imagePullPolicy: IfNotPresent
+                  args:
+                    - "--csi-address=$(CSI_ADDRESS)"
+                  env:
+                    - name: CSI_ADDRESS
+                      value: /csi/csi.sock
+                  volumeMounts:
+                    - name: socket-dir
+                      mountPath: /csi
+              volumes:
+                - name: socket-dir
+                  emptyDir: {}

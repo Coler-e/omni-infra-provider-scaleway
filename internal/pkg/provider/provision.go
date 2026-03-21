@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	block "github.com/scaleway/scaleway-sdk-go/api/block/v1alpha1"
 	instance "github.com/scaleway/scaleway-sdk-go/api/instance/v1"
 	"github.com/scaleway/scaleway-sdk-go/scw"
 	"github.com/siderolabs/omni/client/pkg/infra/provision"
@@ -405,11 +406,16 @@ func (p *Provisioner) Deprovision(ctx context.Context, logger *zap.Logger, machi
 		return provision.NewRetryInterval(time.Second * 5)
 	}
 
-	// Collect volume IDs before deleting the server.
-	var volumeIDs []string
+	// Collect volume IDs and types before deleting the server.
+	type volEntry struct {
+		id       string
+		volType  instance.VolumeServerVolumeType
+	}
+
+	var volumes []volEntry
 
 	for _, vol := range resp.Server.Volumes {
-		volumeIDs = append(volumeIDs, vol.ID)
+		volumes = append(volumes, volEntry{id: vol.ID, volType: vol.VolumeType})
 	}
 
 	if err = instanceAPI.DeleteServer(&instance.DeleteServerRequest{
@@ -423,12 +429,32 @@ func (p *Provisioner) Deprovision(ctx context.Context, logger *zap.Logger, machi
 
 	p.releaseZone(deprovisionZone)
 
-	for _, volID := range volumeIDs {
-		if err = instanceAPI.DeleteVolume(&instance.DeleteVolumeRequest{
-			Zone:     zone,
-			VolumeID: volID,
-		}, scw.WithContext(ctx)); err != nil {
-			logger.Warn("failed to delete volume", zap.String("volume_id", volID), zap.Error(err))
+	blockAPI := block.NewAPI(p.scwClient)
+
+	for _, vol := range volumes {
+		switch vol.volType {
+		case instance.VolumeServerVolumeTypeLSSD:
+			// Local SSD volumes are deleted automatically with the server.
+		case instance.VolumeServerVolumeTypeSbsVolume:
+			// SBS (Scaleway Block Storage) volumes require the block API.
+			if err = blockAPI.DeleteVolume(&block.DeleteVolumeRequest{
+				Zone:     zone,
+				VolumeID: vol.id,
+			}, scw.WithContext(ctx)); err != nil {
+				logger.Warn("failed to delete sbs volume", zap.String("volume_id", vol.id), zap.Error(err))
+			} else {
+				logger.Info("deleted sbs volume", zap.String("volume_id", vol.id))
+			}
+		default:
+			// b_ssd and other types managed by the instance API.
+			if err = instanceAPI.DeleteVolume(&instance.DeleteVolumeRequest{
+				Zone:     zone,
+				VolumeID: vol.id,
+			}, scw.WithContext(ctx)); err != nil {
+				logger.Warn("failed to delete volume", zap.String("volume_id", vol.id), zap.String("type", string(vol.volType)), zap.Error(err))
+			} else {
+				logger.Info("deleted volume", zap.String("volume_id", vol.id), zap.String("type", string(vol.volType)))
+			}
 		}
 	}
 
