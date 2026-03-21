@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	instance "github.com/scaleway/scaleway-sdk-go/api/instance/v1"
@@ -26,11 +27,18 @@ import (
 type Provisioner struct {
 	scwClient   *scw.Client
 	defaultZone string
+
+	zoneMu     sync.Mutex
+	zoneCounts map[string]int // in-memory zone counts; initialized lazily from Scaleway API
 }
 
 // NewProvisioner creates a new provisioner.
 func NewProvisioner(scwClient *scw.Client, defaultZone string) *Provisioner {
-	return &Provisioner{scwClient: scwClient, defaultZone: defaultZone}
+	return &Provisioner{
+		scwClient:   scwClient,
+		defaultZone: defaultZone,
+		zoneCounts:  make(map[string]int),
+	}
 }
 
 // ProvisionSteps implements infra.Provisioner.
@@ -49,6 +57,12 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 
 			if providerData.ImageID == "" && providerData.ImageName == "" {
 				return fmt.Errorf("either image_id or image_name must be set")
+			}
+
+			for _, r := range providerData.Regions {
+				if len(r.Zones) == 0 {
+					return fmt.Errorf("region %q has no zones defined", r.Region)
+				}
 			}
 
 			if providerData.Arch != "" && providerData.Arch != "amd64" && providerData.Arch != "arm64" {
@@ -86,8 +100,8 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 			}
 
 			var zoneName string
-			if len(providerData.Zones) > 0 {
-				zoneName, err = pickZone(ctx, instance.NewAPI(p.scwClient), providerData.Zones)
+			if allZones := providerData.AllZones(); len(allZones) > 0 {
+				zoneName, err = p.pickZone(ctx, instance.NewAPI(p.scwClient), allZones)
 				if err != nil {
 					return err
 				}
@@ -102,9 +116,11 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 
 			instanceAPI := instance.NewAPI(p.scwClient)
 
+			commercialType := providerData.CommercialTypeForZone(zoneName)
+
 			imageID := providerData.ImageID
 			if imageID == "" && providerData.ImageName != "" {
-				scwArch, err := resolveArch(ctx, instanceAPI, zone, providerData.CommercialType, providerData.Arch)
+				scwArch, err := resolveArch(ctx, instanceAPI, zone, commercialType, providerData.Arch)
 				if err != nil {
 					return err
 				}
@@ -122,7 +138,7 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 			req := &instance.CreateServerRequest{
 				Zone:           zone,
 				Name:           pctx.GetRequestID(),
-				CommercialType: providerData.CommercialType,
+				CommercialType: commercialType,
 				Image:          &imageID,
 				Tags:           tags,
 				BootType:       &bootType,
@@ -152,7 +168,7 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 			logger.Info("created Scaleway server", zap.String("server_id", serverID))
 
 			// Attach private NIC if a private network is configured for this region.
-			if pnID := providerData.PrivateNetworkIDs[zoneToRegion(zoneName)]; pnID != "" {
+			if pnID := providerData.NetworkIDForZone(zoneName); pnID != "" {
 				_, err = instanceAPI.CreatePrivateNIC(&instance.CreatePrivateNICRequest{
 					Zone:             zone,
 					ServerID:         serverID,
@@ -193,7 +209,7 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 		provision.NewStep("waitForRunning", func(ctx context.Context, logger *zap.Logger, pctx provision.Context[*resources.Machine]) error {
 			serverID := pctx.State.TypedSpec().Value.ServerId
 			if serverID == "" {
-				return provision.NewRetryInterval(time.Second * 10)
+				return provision.NewRetryInterval(time.Second * 5)
 			}
 
 			zoneName := pctx.State.TypedSpec().Value.Zone
@@ -206,52 +222,39 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 				return fmt.Errorf("invalid zone %q: %w", zoneName, err)
 			}
 
-			instanceAPI := instance.NewAPI(p.scwClient)
+			logger.Info("waiting for server to be running", zap.String("server_id", serverID))
 
-			resp, err := instanceAPI.GetServer(&instance.GetServerRequest{
+			server, err := instance.NewAPI(p.scwClient).WaitForServer(&instance.WaitForServerRequest{
 				Zone:     zone,
 				ServerID: serverID,
 			}, scw.WithContext(ctx))
 			if err != nil {
-				return fmt.Errorf("failed to get server state for %s: %w", serverID, err)
+				return fmt.Errorf("failed waiting for server %s: %w", serverID, err)
 			}
 
-			state := resp.Server.State
-			logger.Info("waiting for server to be running",
-				zap.String("server_id", serverID),
-				zap.String("state", state.String()),
-			)
-
-			switch state {
-			case instance.ServerStateRunning:
-				return nil
-			case instance.ServerStateStopped, instance.ServerStateStoppedInPlace, instance.ServerStateLocked:
-				return fmt.Errorf("server %s entered terminal state %q", serverID, state)
+			if server.State != instance.ServerStateRunning {
+				return fmt.Errorf("server %s entered terminal state %q", serverID, server.State)
 			}
 
-			return provision.NewRetryInterval(time.Second * 10)
+			return nil
 		}),
 	}
 }
 
-// zoneToRegion strips the zone suffix to get the region, e.g. "fr-par-1" → "fr-par".
-func zoneToRegion(zone string) string {
-	if i := strings.LastIndex(zone, "-"); i > 0 {
-		return zone[:i]
-	}
 
-	return zone
-}
+// pickZone selects the zone with the fewest omni-managed servers.
+// Unknown zones are initialized from the Scaleway API once, then tracked in-memory.
+// The mutex makes zone selection atomic so concurrent provisioning still guarantees even spread.
+func (p *Provisioner) pickZone(ctx context.Context, instanceAPI *instance.API, zones []string) (string, error) {
+	p.zoneMu.Lock()
+	defer p.zoneMu.Unlock()
 
-// pickZone selects the zone with the fewest omni-managed servers from the candidate list.
-// With concurrency=1 there is no race, so this guarantees even spread.
-func pickZone(ctx context.Context, instanceAPI *instance.API, zones []string) (string, error) {
-	counts := make(map[string]int, len(zones))
+	// Initialize any zones not yet seen from the Scaleway API.
 	for _, z := range zones {
-		counts[z] = 0
-	}
+		if _, ok := p.zoneCounts[z]; ok {
+			continue
+		}
 
-	for _, z := range zones {
 		zone, err := scw.ParseZone(z)
 		if err != nil {
 			return "", fmt.Errorf("invalid zone %q: %w", z, err)
@@ -265,17 +268,30 @@ func pickZone(ctx context.Context, instanceAPI *instance.API, zones []string) (s
 			return "", fmt.Errorf("failed to list servers in zone %s: %w", z, err)
 		}
 
-		counts[z] = int(resp.TotalCount)
+		p.zoneCounts[z] = int(resp.TotalCount)
 	}
 
 	picked := zones[0]
 	for _, z := range zones[1:] {
-		if counts[z] < counts[picked] {
+		if p.zoneCounts[z] < p.zoneCounts[picked] {
 			picked = z
 		}
 	}
 
+	// Reserve the slot immediately so concurrent picks see an up-to-date count.
+	p.zoneCounts[picked]++
+
 	return picked, nil
+}
+
+// releaseZone decrements the in-memory count for a zone after a server is deprovisioned.
+func (p *Provisioner) releaseZone(zone string) {
+	p.zoneMu.Lock()
+	defer p.zoneMu.Unlock()
+
+	if p.zoneCounts[zone] > 0 {
+		p.zoneCounts[zone]--
+	}
 }
 
 func resolveImageByName(ctx context.Context, instanceAPI *instance.API, zone scw.Zone, name string, arch instance.Arch) (string, error) {
@@ -403,6 +419,8 @@ func (p *Provisioner) Deprovision(ctx context.Context, logger *zap.Logger, machi
 	}
 
 	logger.Info("server deleted", zap.String("server_id", serverID))
+
+	p.releaseZone(deprovisionZone)
 
 	for _, volID := range volumeIDs {
 		if err = instanceAPI.DeleteVolume(&instance.DeleteVolumeRequest{

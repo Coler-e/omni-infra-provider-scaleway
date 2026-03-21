@@ -3,18 +3,58 @@
   "properties": {
     "zone": {
       "type": "string",
-      "description": "Scaleway zone for all machines (e.g. fr-par-1). Use zones for multi-zone distribution."
+      "description": "Single Scaleway zone for all machines (e.g. fr-par-1). Use regions for multi-zone/multi-region distribution."
     },
-    "zones": {
+    "regions": {
       "type": "array",
-      "description": "List of enabled zones. The provider distributes machines across them using a hash of the request ID. Takes precedence over zone.",
+      "description": "List of regions to distribute machines across. Each entry declares the zones to use within that region and an optional private network. Takes precedence over zone.",
       "items": {
-        "type": "string"
+        "type": "object",
+        "properties": {
+          "region": {
+            "type": "string",
+            "description": "Scaleway region",
+            "enum": ["fr-par", "nl-ams", "pl-waw", "it-mil"]
+          },
+          "zones": {
+            "type": "array",
+            "description": "Zones within this region to use.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "zone": {
+                  "type": "string",
+                  "description": "Scaleway zone. Must belong to the parent region.",
+                  "enum": [
+                    "fr-par-1", "fr-par-2", "fr-par-3",
+                    "nl-ams-1", "nl-ams-2", "nl-ams-3",
+                    "pl-waw-1", "pl-waw-2", "pl-waw-3",
+                    "it-mil-1"
+                  ]
+                },
+                "commercial_type": {
+                  "type": "string",
+                  "description": "Instance type for this zone (e.g. PRO2-M). Overrides region and global commercial_type."
+                }
+              },
+              "required": ["zone"]
+            }
+          },
+          "commercial_type": {
+            "type": "string",
+            "description": "Instance type for this region (e.g. PRO2-M). Overrides the global commercial_type for all zones in this region."
+          },
+          "network_id": {
+            "type": "string",
+            "description": "Optional Private Network UUID to attach instances to. Scaleway Private Networks are regional and span all zones in a region."
+          }
+        },
+        "required": ["region", "zones"]
       }
     },
     "commercial_type": {
       "type": "string",
-      "description": "Scaleway instance type, e.g. DEV1-S, GP1-XS, PRO2-S"
+      "description": "Default Scaleway instance type, e.g. DEV1-S, GP1-XS, PRO2-S. Can be overridden per region or per zone."
     },
     "image_id": {
       "type": "string",
@@ -22,27 +62,21 @@
     },
     "image_name": {
       "type": "string",
-      "description": "Base name of a Talos OS image. The arch suffix is appended automatically (e.g. \"talos-v1.12.6\" → \"talos-v1.12.6-amd64\"). Allows using the same machine class across zones."
+      "description": "Base name of a Talos OS image. The provider selects the image matching the zone arch automatically (e.g. \"talos-v1.12.6\")."
     },
     "arch": {
       "type": "string",
-      "description": "CPU architecture: amd64 (default) or arm64. Used to select the correct image when image_name is set."
+      "description": "CPU architecture. Inferred automatically from the instance type if not set.",
+      "enum": ["amd64", "arm64"]
     },
     "disk_size_gb": {
       "type": "integer",
-      "description": "Root disk size in GB (default: 50)."
+      "description": "Root disk size in GB (default: 40). Must respect the instance type local SSD limits."
     },
     "tags": {
       "type": "array",
-      "description": "Optional tags to apply to the Scaleway instance",
+      "description": "Optional tags to apply to the Scaleway instance.",
       "items": {
-        "type": "string"
-      }
-    },
-    "private_network_ids": {
-      "type": "object",
-      "description": "Map of Scaleway region to Private Network UUID. Each instance is attached to the private network matching its region. Example: {\"fr-par\": \"pn-...\", \"nl-ams\": \"pn-...\"}. Scaleway Private Networks are regional and span all zones in a region.",
-      "additionalProperties": {
         "type": "string"
       }
     }
