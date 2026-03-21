@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "properties": {
+    "zone": {
+      "type": "string",
+      "description": "Scaleway zone for all machines (e.g. fr-par-1). Use zones for multi-zone distribution."
+    },
+    "zones": {
+      "type": "array",
+      "description": "List of enabled zones. The provider distributes machines across them using a hash of the request ID. Takes precedence over zone.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "commercial_type": {
+      "type": "string",
+      "description": "Scaleway instance type, e.g. DEV1-S, GP1-XS, PRO2-S"
+    },
+    "image_id": {
+      "type": "string",
+      "description": "UUID of a Talos OS image pre-uploaded to Scaleway (zone-specific). Use image_name for multi-zone setups."
+    },
+    "image_name": {
+      "type": "string",
+      "description": "Base name of a Talos OS image. The arch suffix is appended automatically (e.g. \"talos-v1.12.6\" → \"talos-v1.12.6-amd64\"). Allows using the same machine class across zones."
+    },
+    "arch": {
+      "type": "string",
+      "description": "CPU architecture: amd64 (default) or arm64. Used to select the correct image when image_name is set."
+    },
+    "disk_size_gb": {
+      "type": "integer",
+      "description": "Root disk size in GB (default: 50)."
+    },
+    "tags": {
+      "type": "array",
+      "description": "Optional tags to apply to the Scaleway instance",
+      "items": {
+        "type": "string"
+      }
+    },
+    "private_network_ids": {
+      "type": "object",
+      "description": "Map of Scaleway region to Private Network UUID. Each instance is attached to the private network matching its region. Example: {\"fr-par\": \"pn-...\", \"nl-ams\": \"pn-...\"}. Scaleway Private Networks are regional and span all zones in a region.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "commercial_type"
+  ]
+}

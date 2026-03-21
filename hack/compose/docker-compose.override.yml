@@ -1,0 +1,10 @@
+services:
+  omni-infra-provider-scaleway:
+    environment:
+      - SCW_ACCESS_KEY=${SCW_ACCESS_KEY}
+      - SCW_SECRET_KEY=${SCW_SECRET_KEY}
+      - SCW_DEFAULT_PROJECT_ID=${SCW_DEFAULT_PROJECT_ID}
+      - OMNI_SERVICE_ACCOUNT_KEY=${OMNI_SERVICE_ACCOUNT_KEY}
+    command: >-
+      --omni-api-endpoint=https://localhost:8099
+      --insecure-skip-verify
