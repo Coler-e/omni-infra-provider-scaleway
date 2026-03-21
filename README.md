@@ -27,11 +27,14 @@ Upload the Talos disk image to Scaleway Object Storage and import it as a custom
 The image name must follow the pattern `<image_name>` (e.g. `talos-v1.9.0`).
 The provider uses the Scaleway image's arch metadata, so no suffix is needed.
 
-Example using the Scaleway CLI:
+Download the Talos disk images from [factory.talos.dev](https://factory.talos.dev/) — select the Scaleway platform and your schematic, then download the `.qcow2` for each architecture you need.
+
+Example using the Scaleway CLI (repeat for each zone and each arch):
 
 ```bash
+# --- amd64 ---
 # Upload to Object Storage
-aws s3 cp talos.qcow2 s3://my-bucket/talos.qcow2 \
+aws s3 cp talos-amd64.qcow2 s3://my-bucket/talos-amd64.qcow2 \
   --endpoint-url https://s3.fr-par.scw.cloud
 
 # Create snapshot
@@ -39,7 +42,7 @@ scw instance snapshot create \
   name=talos-v1.9.0 \
   volume-type=l_ssd \
   bucket=my-bucket \
-  key=talos.qcow2 \
+  key=talos-amd64.qcow2 \
   zone=fr-par-1
 
 # Create image from snapshot
@@ -48,9 +51,26 @@ scw instance image create \
   snapshot-id=<snapshot-id> \
   arch=x86_64 \
   zone=fr-par-1
+
+# --- arm64 ---
+aws s3 cp talos-arm64.qcow2 s3://my-bucket/talos-arm64.qcow2 \
+  --endpoint-url https://s3.fr-par.scw.cloud
+
+scw instance snapshot create \
+  name=talos-v1.9.0 \
+  volume-type=l_ssd \
+  bucket=my-bucket \
+  key=talos-arm64.qcow2 \
+  zone=fr-par-1
+
+scw instance image create \
+  name=talos-v1.9.0 \
+  snapshot-id=<snapshot-id> \
+  arch=arm64 \
+  zone=fr-par-1
 ```
 
-Repeat for each zone.
+Repeat for each zone. Because the provider filters images by both name and arch, amd64 and arm64 instances can share the same `image_name` — the correct image is selected automatically.
 
 ## Running
 
@@ -62,7 +82,7 @@ docker run --rm \
   -e SCW_SECRET_KEY=<your-secret-key> \
   -e SCW_DEFAULT_PROJECT_ID=<your-project-id> \
   -e OMNI_SERVICE_ACCOUNT_KEY=<your-service-account-key> \
-  ghcr.io/Coler-e/omni-infra-provider-scaleway:latest \
+  ghcr.io/coler-e/omni-infra-provider-scaleway:latest \
   --omni-api-endpoint=https://<your-omni-host>:443
 ```
 
