@@ -152,5 +152,5 @@ ARG TARGETARCH
 COPY --from=omni-infra-provider-scaleway omni-infra-provider-scaleway-linux-${TARGETARCH} /omni-infra-provider-scaleway
 COPY --from=image-fhs / /
 COPY --from=image-ca-certificates / /
-LABEL org.opencontainers.image.source=https://github.com/Coler-e/omni-infra-provider-scaleway
+LABEL org.opencontainers.image.source=https://github.com/coler-e/omni-infra-provider-scaleway
 ENTRYPOINT ["/omni-infra-provider-scaleway"]
