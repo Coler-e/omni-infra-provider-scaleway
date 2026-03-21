@@ -76,14 +76,36 @@ Repeat for each zone. Because the provider filters images by both name and arch,
 
 The provider is distributed as a container image via GHCR.
 
+### Docker Compose (recommended)
+
+Create a `.env` file with your credentials:
+
+```env
+SCW_ACCESS_KEY=<your-access-key>
+SCW_SECRET_KEY=<your-secret-key>
+SCW_DEFAULT_PROJECT_ID=<your-project-id>
+SCW_DEFAULT_ZONE=fr-par-1
+OMNI_ENDPOINT=https://<your-omni-host>:443
+OMNI_SERVICE_ACCOUNT_KEY=<your-service-account-key>
+```
+
+Then start the provider:
+
 ```bash
-docker run --rm \
+docker compose up -d
+```
+
+### Docker
+
+```bash
+docker run -d \
   -e SCW_ACCESS_KEY=<your-access-key> \
   -e SCW_SECRET_KEY=<your-secret-key> \
   -e SCW_DEFAULT_PROJECT_ID=<your-project-id> \
+  -e SCW_DEFAULT_ZONE=fr-par-1 \
+  -e OMNI_ENDPOINT=https://<your-omni-host>:443 \
   -e OMNI_SERVICE_ACCOUNT_KEY=<your-service-account-key> \
-  ghcr.io/coler-e/omni-infra-provider-scaleway:latest \
-  --omni-api-endpoint=https://<your-omni-host>:443
+  ghcr.io/coler-e/omni-infra-provider-scaleway:latest
 ```
 
 ### CLI flags
