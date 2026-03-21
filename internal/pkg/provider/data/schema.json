@@ -19,22 +19,21 @@
           "zones": {
             "type": "array",
             "description": "Zones within this region to use.",
+            "minItems": 1,
             "items": {
               "type": "object",
               "properties": {
                 "zone": {
                   "type": "string",
-                  "description": "Scaleway zone. Must belong to the parent region.",
-                  "enum": [
-                    "fr-par-1", "fr-par-2", "fr-par-3",
-                    "nl-ams-1", "nl-ams-2", "nl-ams-3",
-                    "pl-waw-1", "pl-waw-2", "pl-waw-3",
-                    "it-mil-1"
-                  ]
+                  "description": "Scaleway zone. Must belong to the parent region (e.g. fr-par-1, fr-par-2, fr-par-3 for fr-par)."
                 },
                 "commercial_type": {
                   "type": "string",
                   "description": "Instance type for this zone (e.g. PRO2-M). Overrides region and global commercial_type."
+                },
+                "disk_size_gb": {
+                  "type": "integer",
+                  "description": "Root disk size in GB for this zone. Overrides region and global disk_size_gb. Leave 0 to inherit."
                 }
               },
               "required": ["zone"]
@@ -43,6 +42,10 @@
           "commercial_type": {
             "type": "string",
             "description": "Instance type for this region (e.g. PRO2-M). Overrides the global commercial_type for all zones in this region."
+          },
+          "disk_size_gb": {
+            "type": "integer",
+            "description": "Root disk size in GB for all zones in this region. Overrides global disk_size_gb. Leave 0 to inherit."
           },
           "network_id": {
             "type": "string",
@@ -71,7 +74,7 @@
     },
     "disk_size_gb": {
       "type": "integer",
-      "description": "Root disk size in GB (default: 40). Must respect the instance type local SSD limits."
+      "description": "Root disk size in GB (default: 40). Must respect the instance type local SSD limits. Can be overridden per region or per zone; 0 uses this global value."
     },
     "tags": {
       "type": "array",
@@ -83,5 +86,9 @@
   },
   "required": [
     "commercial_type"
+  ],
+  "anyOf": [
+    {"required": ["image_id"]},
+    {"required": ["image_name"]}
   ]
 }

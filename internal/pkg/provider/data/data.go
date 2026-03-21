@@ -15,10 +15,11 @@ import (
 //go:embed schema.json
 var Schema []byte
 
-// ZoneConfig declares a zone and an optional instance type override.
+// ZoneConfig declares a zone and optional instance type / disk size overrides.
 type ZoneConfig struct {
 	Zone           string `yaml:"zone"`
 	CommercialType string `yaml:"commercial_type,omitempty"`
+	DiskSizeGB     uint64 `yaml:"disk_size_gb,omitempty"`
 }
 
 // Region declares zones and an optional private network for a Scaleway region.
@@ -26,6 +27,7 @@ type Region struct {
 	Region         string       `yaml:"region"`
 	Zones          []ZoneConfig `yaml:"zones"`
 	CommercialType string       `yaml:"commercial_type,omitempty"`
+	DiskSizeGB     uint64       `yaml:"disk_size_gb,omitempty"`
 	NetworkID      string       `yaml:"network_id,omitempty"`
 }
 
@@ -85,6 +87,30 @@ func (d *Data) CommercialTypeForZone(zone string) string {
 	}
 
 	return d.CommercialType
+}
+
+// DiskSizeGBForZone returns the most specific disk size for the given zone.
+// Precedence: zone-level > region-level > global. Returns 0 if none is set (caller applies default).
+func (d *Data) DiskSizeGBForZone(zone string) uint64 {
+	region := zoneToRegion(zone)
+
+	for _, r := range d.Regions {
+		if r.Region != region {
+			continue
+		}
+
+		for _, z := range r.Zones {
+			if z.Zone == zone && z.DiskSizeGB != 0 {
+				return z.DiskSizeGB
+			}
+		}
+
+		if r.DiskSizeGB != 0 {
+			return r.DiskSizeGB
+		}
+	}
+
+	return d.DiskSizeGB
 }
 
 // NetworkIDForZone returns the private network ID for the region containing the given zone, if any.

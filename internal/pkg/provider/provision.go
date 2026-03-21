@@ -144,7 +144,7 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 				BootType:       &bootType,
 			}
 
-			diskSizeGB := providerData.DiskSizeGB
+			diskSizeGB := providerData.DiskSizeGBForZone(zoneName)
 			if diskSizeGB == 0 {
 				diskSizeGB = 40
 			}
@@ -206,7 +206,7 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 
 			return nil
 		}),
-		provision.NewStep("waitForRunning", func(ctx context.Context, logger *zap.Logger, pctx provision.Context[*resources.Machine]) error {
+		provision.NewStep("waitForRunning", func(ctx context.Context, _ *zap.Logger, pctx provision.Context[*resources.Machine]) error {
 			serverID := pctx.State.TypedSpec().Value.ServerId
 			if serverID == "" {
 				return provision.NewRetryInterval(time.Second * 5)
@@ -222,21 +222,22 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 				return fmt.Errorf("invalid zone %q: %w", zoneName, err)
 			}
 
-			logger.Info("waiting for server to be running", zap.String("server_id", serverID))
-
-			server, err := instance.NewAPI(p.scwClient).WaitForServer(&instance.WaitForServerRequest{
+			resp, err := instance.NewAPI(p.scwClient).GetServer(&instance.GetServerRequest{
 				Zone:     zone,
 				ServerID: serverID,
 			}, scw.WithContext(ctx))
 			if err != nil {
-				return fmt.Errorf("failed waiting for server %s: %w", serverID, err)
+				return fmt.Errorf("failed to get server %s: %w", serverID, err)
 			}
 
-			if server.State != instance.ServerStateRunning {
-				return fmt.Errorf("server %s entered terminal state %q", serverID, server.State)
+			switch resp.Server.State {
+			case instance.ServerStateRunning:
+				return nil
+			case instance.ServerStateStopped, instance.ServerStateStoppedInPlace, instance.ServerStateLocked:
+				return fmt.Errorf("server %s entered terminal state %q", serverID, resp.Server.State)
+			default:
+				return provision.NewRetryInterval(time.Second * 5)
 			}
-
-			return nil
 		}),
 	}
 }

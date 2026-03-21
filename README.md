@@ -129,8 +129,8 @@ Provider data is set in Omni as a YAML blob on the `MachineRequest` or `MachineC
 ### Full example
 
 ```yaml
-# Global defaults
-commercial_type: GP1-M          # used when no region/zone override is set
+# Global defaults (apply to all zones unless overridden)
+commercial_type: GP1-M
 image_name: talos-v1.12.6
 disk_size_gb: 40
 tags:
@@ -139,17 +139,19 @@ tags:
 regions:
   - region: fr-par
     commercial_type: PRO2-M     # overrides global for all fr-par zones
+    disk_size_gb: 80            # overrides global for all fr-par zones
     network_id: pn-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
     zones:
       - zone: fr-par-1
       - zone: fr-par-2
       - zone: fr-par-3
         commercial_type: DEV1-L # overrides region for this zone only
+        disk_size_gb: 25        # overrides region for this zone only
 
   - region: nl-ams
     network_id: pn-yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
     zones:
-      - zone: nl-ams-1          # falls back to global GP1-M
+      - zone: nl-ams-1          # falls back to global GP1-M / 40 GB
       - zone: nl-ams-2
       - zone: nl-ams-3
 
@@ -171,23 +173,25 @@ regions:
 | `regions` | array | no | — | List of region entries for multi-zone/multi-region distribution. Takes precedence over `zone`. |
 | `regions[].region` | string | yes | — | Scaleway region: `fr-par`, `nl-ams`, `pl-waw`, or `it-mil`. |
 | `regions[].zones` | array | yes | — | Zones within this region. Each entry is an object with a `zone` field. |
-| `regions[].zones[].zone` | string | yes | — | Scaleway zone (e.g. `fr-par-1`). Must belong to the parent region. |
+| `regions[].zones[].zone` | string | yes | — | Scaleway zone (e.g. `fr-par-1`, `fr-par-2`). Must belong to the parent region. |
 | `regions[].zones[].commercial_type` | string | no | — | Instance type for this zone. Overrides region and global `commercial_type`. |
+| `regions[].zones[].disk_size_gb` | integer | no | — | Disk size in GB for this zone. Overrides region and global `disk_size_gb`. |
 | `regions[].commercial_type` | string | no | — | Instance type for all zones in this region. Overrides global `commercial_type`. |
+| `regions[].disk_size_gb` | integer | no | — | Disk size in GB for all zones in this region. Overrides global `disk_size_gb`. |
 | `regions[].network_id` | string | no | — | Private Network UUID to attach instances to. Scaleway Private Networks span all zones in a region. |
 | `arch` | string | no | inferred | Override architecture: `amd64` or `arm64`. Inferred automatically from the instance type if not set. |
-| `disk_size_gb` | integer | no | `40` | Root disk size in GB. Must respect the instance type's local SSD limits. |
+| `disk_size_gb` | integer | no | `40` | Default root disk size in GB. Must respect the instance type's local SSD limits. Can be overridden per region or per zone. |
 | `tags` | []string | no | — | Additional tags applied to the Scaleway instance. |
 
-### Instance type precedence
+### Field precedence
 
-When a machine is placed in a zone, the provider resolves `commercial_type` in this order:
+`commercial_type` and `disk_size_gb` both follow the same resolution order:
 
-1. **Zone-level** `regions[].zones[].commercial_type` (most specific)
-2. **Region-level** `regions[].commercial_type`
-3. **Global** `commercial_type` (fallback)
+1. **Zone-level** (most specific)
+2. **Region-level**
+3. **Global** (fallback)
 
-This allows different regions to use different instance families (e.g. `PRO2-M` in `fr-par` where it is available, `GP1-M` elsewhere).
+This is useful when an instance family is only available in certain regions (e.g. `PRO2-M` in `fr-par` but not in `nl-ams`) or when different regions have different local SSD limits.
 
 ### Zone spread
 
