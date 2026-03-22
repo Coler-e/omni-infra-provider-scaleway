@@ -1,5 +1,7 @@
 # omni-infra-provider-scaleway
 
+> **⚠️ Disclaimer:** This provider was vibe-coded. While a number of edge cases have been addressed along the way, it has not been through rigorous production hardening. Use at your own risk.
+
 An [Omni](https://github.com/siderolabs/omni) infrastructure provider for [Scaleway](https://www.scaleway.com/).
 It provisions Scaleway Instances on demand and registers them with Omni as Talos machines.
 
@@ -70,7 +72,7 @@ Run `./hack/upload-talos-image.sh --help` for all options.
 
 Scaleway instances require a schematic that includes:
 
-- **QEMU guest agent** (`siderolabs/qemu-guest-agent`) — needed for Omni health checks and graceful shutdown.
+- **QEMU guest agent** (`siderolabs/qemu-guest-agent`) — required for Scaleway's hypervisor to interact with the VM (soft reboot, shutdown signals, metrics).
 - **Scaleway kernel args** — required so the Talos bootloader is configured correctly for the platform. Without these, kernel-arg upgrades will wipe platform support.
 
 The correct customization block is:
