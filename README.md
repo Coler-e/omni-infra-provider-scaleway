@@ -305,6 +305,78 @@ Scaleway Private Networks are regional — they span all zones within a region.
 Set `network_id` on a region entry to attach every instance in that region to the specified private network.
 Regions without a `network_id` use the public network only.
 
+## Cloud Controller Manager & CSI Driver
+
+To fully integrate your cluster with Scaleway (LoadBalancer Services, persistent volumes), you need the Scaleway Cloud Controller Manager (CCM) and the Scaleway CSI driver. The patches and instructions below are provided as a convenience starting point — always refer to the upstream repositories for up-to-date configuration, version compatibility, and release notes:
+
+- **CCM**: https://github.com/scaleway/scaleway-cloud-controller-manager
+- **CSI**: https://github.com/scaleway/scaleway-csi
+
+### Step 1 — enable external cloud provider on every node
+
+Apply the machine patch `omni-patches/patch-machine-cloud-provider.yaml` to your cluster in Omni (as a machine config patch on the cluster or machine class). This tells kubelet to defer node initialization to the CCM:
+
+```yaml
+machine:
+  kubelet:
+    extraArgs:
+      cloud-provider: external
+```
+
+### Step 2 — install CCM and CSI
+
+#### Option A: Omni inline manifests (quick start)
+
+The repository includes ready-to-use Omni cluster patches under `omni-patches/`:
+
+| File | What it installs |
+|------|-----------------|
+| `patch-cluster-ccm.yaml` | CCM RBAC, Secret, Deployment |
+| `patch-cluster-csi.yaml` | CSI RBAC, Secret, StorageClasses, DaemonSet, Controller Deployment |
+
+Apply them to your cluster via the Omni UI or CLI. Before applying, **replace the placeholder credentials** in each patch:
+
+```yaml
+stringData:
+  SCW_ACCESS_KEY: "YOUR_ACCESS_KEY"       # ← replace
+  SCW_SECRET_KEY: "YOUR_SECRET_KEY"       # ← replace
+  SCW_DEFAULT_PROJECT_ID: "YOUR_PROJECT_ID"  # ← replace
+  SCW_DEFAULT_ZONE: "fr-par-1"            # ← set your primary zone
+```
+
+The CSI patch pins specific sidecar versions (`csi-provisioner:v5.3.0`, etc.) — check the [scaleway-csi releases](https://github.com/scaleway/scaleway-csi/releases) for the latest recommended versions.
+
+> **Note:** Embedding credentials in Omni patches stores them in Omni's state as plaintext. This is fine for development but consider the alternatives below for production.
+
+#### Option B: Helm
+
+The CSI driver has an official Helm chart which handles versioning and credentials more cleanly:
+
+```bash
+helm repo add scaleway https://helm.scw.cloud/
+helm repo update
+
+helm upgrade --install scaleway-csi scaleway/scaleway-csi \
+  --namespace kube-system \
+  --set secret.accessKey=YOUR_ACCESS_KEY \
+  --set secret.secretKey=YOUR_SECRET_KEY \
+  --set secret.projectId=YOUR_PROJECT_ID \
+  --set secret.region=fr-par \
+  --set secret.zone=fr-par-1
+```
+
+The CCM does not currently have an official Helm chart; apply `patch-cluster-ccm.yaml` directly or manage it via GitOps.
+
+#### Option C: GitOps (Argo CD)
+
+For production, manage both components through a GitOps tool like [Argo CD](https://argo-cd.readthedocs.io/):
+
+1. Store the CCM and CSI manifests (or Helm chart values) in a Git repository.
+2. Store credentials in a secret manager (Vault, AWS SSM, Bitwarden, …) and sync them into the cluster via an operator (External Secrets Operator, Sealed Secrets, …).
+3. Create Argo `Application` resources pointing at your manifests — Argo will reconcile them on every push.
+
+This approach keeps credentials out of Omni's state and gives you full audit history and rollback for every component change.
+
 ## Building from Source
 
 ```bash
