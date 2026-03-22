@@ -198,8 +198,9 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 				}
 
 				diskSize := scw.Size(diskSizeGB) * scw.GB
+				volName := pctx.GetRequestID() + "-root-volume"
 				req.Volumes = map[string]*instance.VolumeServerTemplate{
-					"0": {Size: &diskSize},
+					"0": {Size: &diskSize, Name: &volName},
 				}
 			}
 			// When volumes_constraint is nil (e.g. BASIC2) the instance type manages its
@@ -329,10 +330,12 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 					zap.String("to", targetSize.String()),
 				)
 
+				volName := pctx.GetRequestID() + "-root-volume"
 				if _, err = blockAPI.UpdateVolume(&block.UpdateVolumeRequest{
 					Zone:     zone,
 					VolumeID: vol.ID,
 					Size:     &targetSize,
+					Name:     &volName,
 				}, scw.WithContext(ctx)); err != nil {
 					return fmt.Errorf("failed to resize SBS volume %s: %w", vol.ID, err)
 				}
@@ -573,7 +576,19 @@ func (p *Provisioner) Deprovision(ctx context.Context, logger *zap.Logger, machi
 		case instance.VolumeServerVolumeTypeLSSD:
 			// Local SSD volumes are deleted automatically with the server.
 		case instance.VolumeServerVolumeTypeSbsVolume:
-			// SBS (Scaleway Block Storage) volumes require the block API.
+			// SBS volumes are detached asynchronously after server deletion.
+			// Wait for the volume to reach "available" before deleting it.
+			availStatus := block.VolumeStatusAvailable
+			if _, err = blockAPI.WaitForVolume(&block.WaitForVolumeRequest{
+				Zone:           zone,
+				VolumeID:       vol.id,
+				TerminalStatus: &availStatus,
+			}, scw.WithContext(ctx)); err != nil {
+				logger.Warn("timed out waiting for sbs volume to detach", zap.String("volume_id", vol.id), zap.Error(err))
+
+				break
+			}
+
 			if err = blockAPI.DeleteVolume(&block.DeleteVolumeRequest{
 				Zone:     zone,
 				VolumeID: vol.id,
