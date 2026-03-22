@@ -11,6 +11,7 @@ It provisions Scaleway Instances on demand and registers them with Omni as Talos
 - Per-zone and per-region instance type overrides — use different `commercial_type` values across regions.
 - Automatic architecture inference from Scaleway's server-types API (no manual `arch` required).
 - Image lookup by name with arch filter — one machine class works across all zones.
+- Block-storage instance types (POP2, BASIC2, …) supported via SBS snapshots — provider selects `<image_name>-sbs` automatically.
 - Private Network attachment per region (Scaleway VPCs span zones within a region).
 - QEMU guest agent pre-installed in every schematic.
 - `omni-request-id` tagging for traceability.
@@ -24,54 +25,153 @@ It provisions Scaleway Instances on demand and registers them with Omni as Talos
 
 ## Image Setup
 
-Upload the Talos disk image to Scaleway Object Storage and import it as a custom image in each zone you intend to use.
-The image name must follow the pattern `<image_name>` (e.g. `talos-v1.9.0`).
-The provider uses the Scaleway image's arch metadata, so no suffix is needed.
+Before using this provider you must build a Talos image for Scaleway, upload it to Scaleway Object Storage, and import it as a custom image in each zone you intend to use.
 
-Download the Talos disk images from [factory.talos.dev](https://factory.talos.dev/) — select the Scaleway platform and your schematic, then download the `.qcow2` for each architecture you need.
+For detailed Scaleway-specific guidance see the official Talos documentation:
+[Talos Linux — Scaleway Platform](https://docs.siderolabs.com/talos/v1.12/platform-specific-installations/cloud-platforms/scaleway/)
 
-Example using the Scaleway CLI (repeat for each zone and each arch):
+### Using the helper script
+
+The repository includes a script that automates the full workflow (download → convert → upload → register) for one or both architectures across any set of zones.
+
+The script creates **two image variants per zone**:
+- `<image-name>` — backed by an `l_ssd` snapshot, for traditional instance types (GP1, DEV1, PRO2, COPARM1, …)
+- `<image-name>-sbs` — backed by a block-storage (SBS) snapshot, for block-storage instance types (POP2, BASIC2, …). Skipped with a warning for zones where the block storage API is unavailable.
+
+The provider automatically selects the correct variant based on the `commercial_type` you configure.
 
 ```bash
-# --- amd64 ---
-# Upload to Object Storage
-aws s3 cp talos-amd64.qcow2 s3://my-bucket/talos-amd64.qcow2 \
+# Full run: both amd64 + arm64, all 9 zones (fr-par, nl-ams, pl-waw)
+./hack/upload-talos-image.sh \
+  --version v1.12.6 \
+  --schematic 271b03e6560e1dc33065909a4613f1b99bc34224ce6f9991604bbf615218aa6a
+
+# amd64 only, specific zones
+./hack/upload-talos-image.sh \
+  --version v1.12.6 \
+  --schematic 271b03e6560e1dc33065909a4613f1b99bc34224ce6f9991604bbf615218aa6a \
+  --arch amd64 \
+  --zones fr-par-1,fr-par-2,fr-par-3
+
+# Custom image name (default: talos-<version>)
+./hack/upload-talos-image.sh --version v1.13.0 --image-name talos-v1.13.0
+```
+
+The script reads `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, and `SCW_DEFAULT_PROJECT_ID` from the environment or from a `.env` file in the current directory.
+Run `./hack/upload-talos-image.sh --help` for all options.
+
+> **Bucket naming:** the script expects buckets named `talos-images-omni` (fr-par), `talos-images-omni-nl` (nl-ams), and `talos-images-omni-pl` (pl-waw). Edit `REGION_BUCKETS` at the top of the script to match your setup.
+
+---
+
+### Manual process
+
+### Schematic requirements
+
+Scaleway instances require a schematic that includes:
+
+- **QEMU guest agent** (`siderolabs/qemu-guest-agent`) — needed for Omni health checks and graceful shutdown.
+- **Scaleway kernel args** — required so the Talos bootloader is configured correctly for the platform. Without these, kernel-arg upgrades will wipe platform support.
+
+The correct customization block is:
+
+```yaml
+customization:
+  extraKernelArgs:
+    - -console
+    - talos.platform=scaleway
+    - console=ttyS0,115200
+    - talos.dashboard.disabled=0
+  systemExtensions:
+    officialExtensions:
+      - siderolabs/qemu-guest-agent
+```
+
+Generate this schematic at [factory.talos.dev](https://factory.talos.dev/) (select *Scaleway* as the platform, add the QEMU extension, and confirm the kernel args). The resulting schematic ID is embedded in the image download URL.
+
+### Downloading and converting the image
+
+The factory provides images in compressed raw format (`.raw.zst`). Scaleway's snapshot import requires `.qcow2` or `.raw`, so convert before uploading.
+Repeat for each architecture (`amd64` / `arm64`) you intend to use:
+
+```bash
+SCHEMATIC="271b03e6560e1dc33065909a4613f1b99bc34224ce6f9991604bbf615218aa6a"
+TALOS_VERSION="v1.12.6"
+ARCH="amd64"   # or arm64
+
+# Download
+curl -L -o "scaleway-${ARCH}.raw.zst" \
+  "https://factory.talos.dev/image/${SCHEMATIC}/${TALOS_VERSION}/scaleway-${ARCH}.raw.zst"
+
+# Decompress
+zstd -d "scaleway-${ARCH}.raw.zst" -o "scaleway-${ARCH}.raw"
+
+# Convert to qcow2 (Scaleway snapshot import format)
+qemu-img convert -f raw -O qcow2 "scaleway-${ARCH}.raw" "scaleway-${ARCH}.qcow2"
+```
+
+### Uploading and registering the image (per zone)
+
+Create an [Object Storage bucket](https://www.scaleway.com/en/object-storage/) in each region, upload the image, then import it as a snapshot and create an image. Repeat for every zone you plan to use.
+
+You need two image variants:
+
+#### l_ssd image (GP1, DEV1, PRO2, COPARM1, …)
+
+```bash
+BUCKET="my-talos-images"       # bucket name (must be in the same region as the zone)
+IMAGE_NAME="talos-v1.12.6"     # must match image_name in your machine class
+ARCH="amd64"                   # or arm64
+SCW_ARCH="x86_64"              # x86_64 for amd64, arm64 for arm64
+
+# Upload to Object Storage (example: fr-par region)
+aws s3 cp "scaleway-${ARCH}.qcow2" "s3://${BUCKET}/scaleway-${ARCH}.qcow2" \
   --endpoint-url https://s3.fr-par.scw.cloud
 
-# Create snapshot
-scw instance snapshot create \
-  name=talos-v1.9.0 \
+# Import as l_ssd snapshot (one per zone)
+SNAP_ID=$(scw instance snapshot create \
+  name="${IMAGE_NAME}-${ARCH}-snap" \
   volume-type=l_ssd \
-  bucket=my-bucket \
-  key=talos-amd64.qcow2 \
-  zone=fr-par-1
+  bucket="${BUCKET}" \
+  key="scaleway-${ARCH}.qcow2" \
+  zone=fr-par-1 \
+  --output json | jq -r '.snapshot.id')
 
-# Create image from snapshot
+# Wait until state == available, then create the image
 scw instance image create \
-  name=talos-v1.9.0 \
-  snapshot-id=<snapshot-id> \
-  arch=x86_64 \
-  zone=fr-par-1
-
-# --- arm64 ---
-aws s3 cp talos-arm64.qcow2 s3://my-bucket/talos-arm64.qcow2 \
-  --endpoint-url https://s3.fr-par.scw.cloud
-
-scw instance snapshot create \
-  name=talos-v1.9.0 \
-  volume-type=l_ssd \
-  bucket=my-bucket \
-  key=talos-arm64.qcow2 \
-  zone=fr-par-1
-
-scw instance image create \
-  name=talos-v1.9.0 \
-  snapshot-id=<snapshot-id> \
-  arch=arm64 \
+  name="${IMAGE_NAME}" \
+  snapshot-id="${SNAP_ID}" \
+  arch="${SCW_ARCH}" \
   zone=fr-par-1
 ```
 
-Repeat for each zone. Because the provider filters images by both name and arch, amd64 and arm64 instances can share the same `image_name` — the correct image is selected automatically.
+#### SBS image (POP2, BASIC2, …)
+
+Block-storage instance types require a snapshot created via the block API (not the instance API).
+The script attempts this for every zone and skips with a warning if the zone does not support block storage.
+
+```bash
+# Import as block (SBS) snapshot via the block API
+SNAP_ID=$(scw block snapshot import-from-object-storage \
+  bucket="${BUCKET}" \
+  key="scaleway-${ARCH}.qcow2" \
+  name="${IMAGE_NAME}-sbs-${ARCH}-snap" \
+  project-id="${SCW_DEFAULT_PROJECT_ID}" \
+  zone=fr-par-1 \
+  --output json | jq -r '.id')
+
+# Wait until status == available
+# scw block snapshot get "${SNAP_ID}" zone=fr-par-1 --output json | jq '.status'
+
+# Create instance image from the block snapshot (name must end in -sbs)
+scw instance image create \
+  name="${IMAGE_NAME}-sbs" \
+  snapshot-id="${SNAP_ID}" \
+  arch="${SCW_ARCH}" \
+  zone=fr-par-1
+```
+
+Because the provider filters images by both name and architecture, amd64 and arm64 instances can share the same `image_name` value in your machine class — the correct image variant is selected automatically per zone and instance type.
 
 ## Running
 

@@ -76,6 +76,14 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 			schematic, err := pctx.GenerateSchematicID(ctx, logger,
 				provision.WithoutConnectionParams(),
 				provision.WithExtraExtensions("siderolabs/qemu-guest-agent"),
+				// Scaleway kernel args must be included so that schematic upgrades
+				// don't overwrite the bootloader and drop platform support.
+				provision.WithExtraKernelArgs(
+					"-console",
+					"console=ttyS0,115200",
+					"talos.dashboard.disabled=0",
+					"talos.platform=scaleway",
+				),
 			)
 			if err != nil {
 				return err
@@ -85,6 +93,11 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 
 			return nil
 		}),
+		// createServer allocates the Scaleway instance and immediately persists its ID.
+		// Keeping this step self-contained ensures the ServerId is written to COSI state
+		// before any post-creation operation (user-data, NIC, poweron) is attempted.
+		// Without this split, a failure in any of those operations would cause a retry
+		// that re-enters with ServerId == "" and create a duplicate (orphaned) server.
 		provision.NewStep("createServer", func(ctx context.Context, logger *zap.Logger, pctx provision.Context[*resources.Machine]) error {
 			pctx.State.TypedSpec().Value.TalosVersion = pctx.GetTalosVersion()
 
@@ -119,15 +132,47 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 
 			commercialType := providerData.CommercialTypeForZone(zoneName)
 
+			// Query server type constraints once; used for both arch inference and volume logic.
+			serverTypes, err := instanceAPI.ListServersTypes(&instance.ListServersTypesRequest{
+				Zone: zone,
+			}, scw.WithContext(ctx))
+			if err != nil {
+				return fmt.Errorf("failed to list server types in zone %s: %w", zone, err)
+			}
+
+			// maxLocalSSD == 0 when volumes_constraint is nil (block-storage-only types
+			// such as POP2 and BASIC2 that cannot boot from l_ssd snapshots).
+			var maxLocalSSD scw.Size
+			if st, ok := serverTypes.Servers[commercialType]; ok && st.VolumesConstraint != nil {
+				maxLocalSSD = st.VolumesConstraint.MaxSize
+			}
+
 			imageID := providerData.ImageID
 			if imageID == "" && providerData.ImageName != "" {
-				scwArch, err := resolveArch(ctx, instanceAPI, zone, commercialType, providerData.Arch)
+				scwArch, err := resolveArchFromTypes(serverTypes.Servers, commercialType, providerData.Arch)
 				if err != nil {
 					return err
 				}
 
-				imageID, err = resolveImageByName(ctx, instanceAPI, zone, providerData.ImageName, scwArch)
+				// Block-storage instance types (POP2, BASIC2, …) require SBS snapshots and
+				// cannot boot from l_ssd images.  Resolve "<image_name>-sbs" for these.
+				imageName := providerData.ImageName
+				if maxLocalSSD == 0 {
+					imageName += "-sbs"
+				}
+
+				imageID, err = resolveImageByName(ctx, instanceAPI, zone, imageName, scwArch)
 				if err != nil {
+					if maxLocalSSD == 0 {
+						return fmt.Errorf(
+							"%w\n\nHint: %q (commercial_type %s) is a block-storage instance type that "+
+								"requires an SBS-backed image. Run hack/upload-talos-image.sh to create "+
+								"both l_ssd and SBS images automatically. The SBS image must be named %q "+
+								"and be available in zone %s.",
+							err, commercialType, commercialType, imageName, zone,
+						)
+					}
+
 					return err
 				}
 			}
@@ -145,15 +190,22 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 				BootType:       &bootType,
 			}
 
-			diskSizeGB := providerData.DiskSizeGBForZone(zoneName)
-			if diskSizeGB == 0 {
-				diskSizeGB = 40
-			}
+			if maxLocalSSD > 0 {
+				// Traditional instance type with explicit local SSD sizing (GP1, DEV1, PRO2, POP2, …).
+				diskSizeGB := providerData.DiskSizeGBForZone(zoneName)
+				if diskSizeGB == 0 {
+					diskSizeGB = 40
+				}
 
-			diskSize := scw.Size(diskSizeGB) * scw.GB
-			req.Volumes = map[string]*instance.VolumeServerTemplate{
-				"0": {Size: &diskSize},
+				diskSize := scw.Size(diskSizeGB) * scw.GB
+				req.Volumes = map[string]*instance.VolumeServerTemplate{
+					"0": {Size: &diskSize},
+				}
 			}
+			// When volumes_constraint is nil (e.g. BASIC2) the instance type manages its
+			// own root volume: the image snapshot is l_ssd but must not have an explicit
+			// size in the request.  Omitting the volumes field entirely lets Scaleway
+			// auto-size the root volume from the snapshot.
 
 			createResp, err := instanceAPI.CreateServer(req, scw.WithContext(ctx))
 			if err != nil {
@@ -162,48 +214,144 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 
 			serverID := createResp.Server.ID
 
+			// Persist immediately — the controller writes state on step success.
+			// Subsequent steps read ServerId from this saved state.
 			pctx.State.TypedSpec().Value.ServerId = serverID
 			pctx.State.TypedSpec().Value.Zone = zoneName
 			pctx.SetMachineInfraID(serverID)
 
-			logger.Info("created Scaleway server", zap.String("server_id", serverID))
+			logger.Info("created Scaleway server", zap.String("server_id", serverID), zap.String("zone", zoneName))
 
-			// Attach private NIC if a private network is configured for this region.
-			if pnID := providerData.NetworkIDForZone(zoneName); pnID != "" {
-				_, err = instanceAPI.CreatePrivateNIC(&instance.CreatePrivateNICRequest{
-					Zone:             zone,
-					ServerID:         serverID,
-					PrivateNetworkID: pnID,
-				}, scw.WithContext(ctx))
-				if err != nil {
-					return fmt.Errorf("failed to attach private NIC (network %s) to server %s: %w", pnID, serverID, err)
-				}
+			return nil
+		}),
+		// configureServer attaches the private NIC (if any), writes the Talos join config
+		// as cloud-init user-data, and powers the server on.  All operations are idempotent
+		// so the step can be safely retried without creating duplicate resources.
+		provision.NewStep("configureServer", func(ctx context.Context, logger *zap.Logger, pctx provision.Context[*resources.Machine]) error {
+			serverID := pctx.State.TypedSpec().Value.ServerId
+			zoneName := pctx.State.TypedSpec().Value.Zone
 
-				logger.Info("attached private NIC", zap.String("server_id", serverID), zap.String("private_network_id", pnID))
+			zone, err := scw.ParseZone(zoneName)
+			if err != nil {
+				return fmt.Errorf("invalid zone %q: %w", zoneName, err)
 			}
 
-			// Set Talos machine config as cloud-init user-data.
-			err = instanceAPI.SetServerUserData(&instance.SetServerUserDataRequest{
+			instanceAPI := instance.NewAPI(p.scwClient)
+
+			var providerData data.Data
+			if err = pctx.UnmarshalProviderData(&providerData); err != nil {
+				return err
+			}
+
+			// Attach private NIC if configured (idempotent: skip if already attached).
+			if pnID := providerData.NetworkIDForZone(zoneName); pnID != "" {
+				nics, err := instanceAPI.ListPrivateNICs(&instance.ListPrivateNICsRequest{
+					Zone:     zone,
+					ServerID: serverID,
+				}, scw.WithContext(ctx))
+				if err != nil {
+					return fmt.Errorf("failed to list NICs on server %s: %w", serverID, err)
+				}
+
+				attached := false
+
+				for _, nic := range nics.PrivateNics {
+					if nic.PrivateNetworkID == pnID {
+						attached = true
+
+						break
+					}
+				}
+
+				if !attached {
+					_, err = instanceAPI.CreatePrivateNIC(&instance.CreatePrivateNICRequest{
+						Zone:             zone,
+						ServerID:         serverID,
+						PrivateNetworkID: pnID,
+					}, scw.WithContext(ctx))
+					if err != nil {
+						return fmt.Errorf("failed to attach private NIC (network %s) to server %s: %w", pnID, serverID, err)
+					}
+
+					logger.Info("attached private NIC", zap.String("server_id", serverID), zap.String("private_network_id", pnID))
+				}
+			}
+
+			// Set Talos machine config as cloud-init user-data (idempotent PUT).
+			if err = instanceAPI.SetServerUserData(&instance.SetServerUserDataRequest{
 				Zone:     zone,
 				ServerID: serverID,
 				Key:      "cloud-init",
 				Content:  io.NopCloser(strings.NewReader(pctx.ConnectionParams.JoinConfig)),
-			}, scw.WithContext(ctx))
-			if err != nil {
+			}, scw.WithContext(ctx)); err != nil {
 				return fmt.Errorf("failed to set user-data on server %s: %w", serverID, err)
 			}
 
-			// Power on the server.
-			_, err = instanceAPI.ServerAction(&instance.ServerActionRequest{
+			// Get server to inspect its current state and volumes.
+			srv, err := instanceAPI.GetServer(&instance.GetServerRequest{
 				Zone:     zone,
 				ServerID: serverID,
-				Action:   instance.ServerActionPoweron,
 			}, scw.WithContext(ctx))
 			if err != nil {
-				return fmt.Errorf("failed to power on server %s: %w", serverID, err)
+				return fmt.Errorf("failed to get server %s state: %w", serverID, err)
 			}
 
-			logger.Info("powered on Scaleway server", zap.String("server_id", serverID))
+			// Resize SBS block volumes to the configured disk size.
+			// Instance types that don't support explicit LSSD sizing (e.g. BASIC2) receive
+			// an auto-sized root volume from the snapshot (~image size, typically 2-5 GB).
+			// We expand it to disk_size_gb (default 40 GB) via the block API while the
+			// server is still stopped.
+			diskSizeGB := providerData.DiskSizeGBForZone(zoneName)
+			if diskSizeGB == 0 {
+				diskSizeGB = 40
+			}
+
+			targetSize := scw.Size(diskSizeGB) * scw.GB
+			blockAPI := block.NewAPI(p.scwClient)
+
+			for _, vol := range srv.Server.Volumes {
+				if vol.VolumeType != instance.VolumeServerVolumeTypeSbsVolume {
+					continue
+				}
+
+				if vol.Size != nil && *vol.Size >= targetSize {
+					break
+				}
+
+				fromSize := "unknown"
+				if vol.Size != nil {
+					fromSize = vol.Size.String()
+				}
+
+				logger.Info("resizing SBS root volume",
+					zap.String("volume_id", vol.ID),
+					zap.String("from", fromSize),
+					zap.String("to", targetSize.String()),
+				)
+
+				if _, err = blockAPI.UpdateVolume(&block.UpdateVolumeRequest{
+					Zone:     zone,
+					VolumeID: vol.ID,
+					Size:     &targetSize,
+				}, scw.WithContext(ctx)); err != nil {
+					return fmt.Errorf("failed to resize SBS volume %s: %w", vol.ID, err)
+				}
+
+				break
+			}
+
+			if srv.Server.State == instance.ServerStateStopped || srv.Server.State == instance.ServerStateStoppedInPlace {
+				_, err = instanceAPI.ServerAction(&instance.ServerActionRequest{
+					Zone:     zone,
+					ServerID: serverID,
+					Action:   instance.ServerActionPoweron,
+				}, scw.WithContext(ctx))
+				if err != nil {
+					return fmt.Errorf("failed to power on server %s: %w", serverID, err)
+				}
+
+				logger.Info("powered on Scaleway server", zap.String("server_id", serverID))
+			}
 
 			return nil
 		}),
@@ -234,8 +382,8 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 			switch resp.Server.State {
 			case instance.ServerStateRunning:
 				return nil
-			case instance.ServerStateStopped, instance.ServerStateStoppedInPlace, instance.ServerStateLocked:
-				return fmt.Errorf("server %s entered terminal state %q", serverID, resp.Server.State)
+			case instance.ServerStateLocked:
+				return fmt.Errorf("server %s is locked", serverID)
 			default:
 				return provision.NewRetryInterval(time.Second * 5)
 			}
@@ -316,10 +464,10 @@ func resolveImageByName(ctx context.Context, instanceAPI *instance.API, zone scw
 	return "", fmt.Errorf("no image named %q (arch %s) found in zone %s", name, arch, zone)
 }
 
-// resolveArch returns the Scaleway Arch for the given commercial type.
+// resolveArchFromTypes returns the Scaleway Arch for the given commercial type.
 // If userArch is set ("amd64" or "arm64"), it is converted directly.
-// Otherwise the Scaleway server-types API is queried.
-func resolveArch(ctx context.Context, instanceAPI *instance.API, zone scw.Zone, commercialType, userArch string) (instance.Arch, error) {
+// Otherwise the arch is inferred from the already-fetched server types map.
+func resolveArchFromTypes(servers map[string]*instance.ServerType, commercialType, userArch string) (instance.Arch, error) {
 	switch userArch {
 	case "amd64":
 		return instance.ArchX86_64, nil
@@ -328,30 +476,19 @@ func resolveArch(ctx context.Context, instanceAPI *instance.API, zone scw.Zone, 
 	case "arm":
 		return instance.ArchArm, nil
 	case "":
-		return inferArch(ctx, instanceAPI, zone, commercialType)
+		serverType, ok := servers[commercialType]
+		if !ok {
+			return "", fmt.Errorf("commercial type %q not found in server types response", commercialType)
+		}
+
+		switch serverType.Arch {
+		case instance.ArchX86_64, instance.ArchArm64, instance.ArchArm:
+			return serverType.Arch, nil
+		default:
+			return "", fmt.Errorf("unknown architecture %q for commercial type %q", serverType.Arch, commercialType)
+		}
 	default:
 		return "", fmt.Errorf("unsupported arch %q: must be amd64, arm64, or arm", userArch)
-	}
-}
-
-func inferArch(ctx context.Context, instanceAPI *instance.API, zone scw.Zone, commercialType string) (instance.Arch, error) {
-	resp, err := instanceAPI.ListServersTypes(&instance.ListServersTypesRequest{
-		Zone: zone,
-	}, scw.WithContext(ctx))
-	if err != nil {
-		return "", fmt.Errorf("failed to list server types in zone %s: %w", zone, err)
-	}
-
-	serverType, ok := resp.Servers[commercialType]
-	if !ok {
-		return "", fmt.Errorf("commercial type %q not found in zone %s", commercialType, zone)
-	}
-
-	switch serverType.Arch {
-	case instance.ArchX86_64, instance.ArchArm64, instance.ArchArm:
-		return serverType.Arch, nil
-	default:
-		return "", fmt.Errorf("unknown architecture %q for commercial type %q", serverType.Arch, commercialType)
 	}
 }
 
