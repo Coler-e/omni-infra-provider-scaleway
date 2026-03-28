@@ -181,7 +181,7 @@ The provider is distributed as a container image via GHCR.
 
 ### Docker Compose (recommended)
 
-Create a `.env` file with your credentials:
+Create a `.env` file with your credentials (see `.env.example`):
 
 ```env
 SCW_ACCESS_KEY=<your-access-key>
@@ -190,7 +190,10 @@ SCW_DEFAULT_PROJECT_ID=<your-project-id>
 SCW_DEFAULT_ZONE=fr-par-1
 OMNI_ENDPOINT=https://<your-omni-host>:443
 OMNI_SERVICE_ACCOUNT_KEY=<your-service-account-key>
+PROVIDER_ID=scaleway
 ```
+
+> **Provider ID:** `PROVIDER_ID` must match the ID used when creating the Omni service account for this provider. Each provider instance must have a unique ID (e.g. `scaleway-fr-par`, `scaleway-nl-ams`).
 
 Then start the provider:
 
@@ -208,6 +211,7 @@ docker run -d \
   -e SCW_DEFAULT_ZONE=fr-par-1 \
   -e OMNI_ENDPOINT=https://<your-omni-host>:443 \
   -e OMNI_SERVICE_ACCOUNT_KEY=<your-service-account-key> \
+  -e PROVIDER_ID=scaleway \
   ghcr.io/coler-e/omni-infra-provider-scaleway:latest
 ```
 
@@ -215,6 +219,7 @@ docker run -d \
 
 | Flag | Env var | Default | Description |
 |------|---------|---------|-------------|
+| `--id` | `PROVIDER_ID` | `scaleway` | Provider ID. Must match the ID used when creating the Omni service account. Each instance needs a unique ID. |
 | `--omni-api-endpoint` | `OMNI_ENDPOINT` | required | Omni gRPC endpoint (e.g. `https://omni.example.com:443`). |
 | `--omni-service-account-key` | `OMNI_SERVICE_ACCOUNT_KEY` | — | Omni service account key. |
 | `--scaleway-access-key` | `SCW_ACCESS_KEY` | — | Scaleway API access key. |
