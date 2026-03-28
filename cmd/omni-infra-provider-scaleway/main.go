@@ -128,7 +128,7 @@ func init() {
 	rootCmd.Flags().StringVar(&cfg.omniAPIEndpoint, "omni-api-endpoint", os.Getenv("OMNI_ENDPOINT"),
 		"the endpoint of the Omni API, if not set, defaults to OMNI_ENDPOINT env var.")
 	rootCmd.Flags().StringVar(&meta.ProviderID, "id", meta.ProviderID,
-		"the id of the infra provider, it is used to match the resources with the infra provider label.")
+		"the id of the infra provider, it is used to match the resources with the infra provider label. Defaults to PROVIDER_ID env var or 'scaleway'.")
 	rootCmd.Flags().StringVar(&cfg.serviceAccountKey, "omni-service-account-key", os.Getenv("OMNI_SERVICE_ACCOUNT_KEY"),
 		"Omni service account key, if not set, defaults to OMNI_SERVICE_ACCOUNT_KEY.")
 	rootCmd.Flags().StringVar(&cfg.providerName, "provider-name", "Scaleway", "provider name as it appears in Omni")

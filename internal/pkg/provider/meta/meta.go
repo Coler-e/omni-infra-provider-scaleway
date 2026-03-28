@@ -5,5 +5,15 @@
 // Package meta contains meta information about the provider.
 package meta
 
+import "os"
+
 // ProviderID is the ID of the provider.
-var ProviderID = "scaleway"
+var ProviderID = getEnvOrDefault("PROVIDER_ID", "scaleway")
+
+func getEnvOrDefault(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		return v
+	}
+
+	return fallback
+}
